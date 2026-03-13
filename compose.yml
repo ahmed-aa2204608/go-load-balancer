@@ -72,7 +72,7 @@ services:
       target: final
     image: myloadbalancer:latest
     environment:
-      LB_ALGO: round_robin
+      LB_ALGO: lc
     ports:
       - 8000:8000
     depends_on:
@@ -84,3 +84,4 @@ services:
         condition: service_started
 volumes:
   postgres_data:
+

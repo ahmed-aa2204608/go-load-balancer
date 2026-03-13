@@ -4,71 +4,56 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"sync"
 )
 
 type LCserver struct {
-	Addr            string
-	NoOfConnections int
-	Proxy           *httputil.ReverseProxy
+	addr            string
+	noOfConnections int
+	proxy           *httputil.ReverseProxy
+}
+
+func newLCServer(addr string) *LCserver {
+	u, err := url.Parse(addr)
+	handleErr(err)
+	return &LCserver{addr: addr, proxy: httputil.NewSingleHostReverseProxy(u)}
 }
 
 type LeastConnectionsLoadBalancer struct {
-	servers []Server
+	servers []*LCserver
 	mu      sync.Mutex
 }
 
-func newLCLB(servers []Server) *LeastConnectionsLoadBalancer {
-	return &LeastConnectionsLoadBalancer{
-		servers: servers,
-	}
+func newLCLB(servers []*LCserver) *LeastConnectionsLoadBalancer {
+	return &LeastConnectionsLoadBalancer{servers: servers}
 }
 
-func (s *LCserver) Address() string {
-	return s.Addr
-}
-
-func (s *LCserver) getNoOfConnections() int {
-	return s.NoOfConnections
-}
-
-func (s *LCserver) changeNoOfConnections(n int) {
-	s.NoOfConnections = s.NoOfConnections + n
-}
-
-func (s *LCserver) Serve(w http.ResponseWriter, r *http.Request) {
-	s.Proxy.ServeHTTP(w, r)
-}
-
-func (lb *LeastConnectionsLoadBalancer) getNextAvaliableServer() Server {
-	var targerServer Server
-	targetServers := make([]Server, 0)
-	targerServer = lb.servers[0]
-	for _, server := range lb.servers {
-		if targerServer.getNoOfConnections() > server.getNoOfConnections() {
-			targerServer = server
+func (lb *LeastConnectionsLoadBalancer) getNextAvailableServer() *LCserver {
+	min := lb.servers[0]
+	for _, s := range lb.servers[1:] {
+		if s.noOfConnections < min.noOfConnections {
+			min = s
 		}
 	}
-	for _, ser := range lb.servers {
-		if ser.getNoOfConnections() == targerServer.getNoOfConnections() {
-			targetServers = append(targetServers, ser)
+	var tied []*LCserver
+	for _, s := range lb.servers {
+		if s.noOfConnections == min.noOfConnections {
+			tied = append(tied, s)
 		}
 	}
-	if len(targetServers) > 1 {
-		randomInt := rand.Intn(len(targetServers))
-		return targetServers[randomInt]
-	}
-	return targerServer
+	return tied[rand.Intn(len(tied))]
 }
 
 func (lb *LeastConnectionsLoadBalancer) serverProxy(w http.ResponseWriter, r *http.Request) {
 	lb.mu.Lock()
-	target := lb.getNextAvaliableServer()
-	target.changeNoOfConnections(1)
-	lb.mu.Unlock()
-	target.Serve(w, r)
-	lb.mu.Lock()
-	target.changeNoOfConnections(-1)
+	target := lb.getNextAvailableServer()
+	target.noOfConnections++
 	lb.mu.Unlock()
 
+	target.proxy.ServeHTTP(w, r)
+
+	lb.mu.Lock()
+	target.noOfConnections--
+	lb.mu.Unlock()
 }

@@ -9,37 +9,19 @@ import (
 	"sync"
 )
 
-var algorithm string
-
-type Server interface {
-	Address() string
-	Serve(w http.ResponseWriter, r *http.Request)
-	getNoOfConnections() int
-	changeNoOfConnections(n int)
-}
-
 type simpleServer struct {
-	Addr            string
-	NoOfConnections int
-	Proxy           *httputil.ReverseProxy
+	addr  string
+	proxy *httputil.ReverseProxy
 }
 
-func newServer(addr string) Server {
-	serverUrl, err := url.Parse(addr)
+func newSimpleServer(addr string) *simpleServer {
+	u, err := url.Parse(addr)
 	handleErr(err)
-	if algorithm == "lc" {
-		return &LCserver{
-			Addr:            addr,
-			NoOfConnections: 0,
-			Proxy:           httputil.NewSingleHostReverseProxy(serverUrl)}
-	} else {
-		return &simpleServer{
-			Addr:            addr,
-			NoOfConnections: 0,
-			Proxy:           httputil.NewSingleHostReverseProxy(serverUrl),
-		}
-	}
+	return &simpleServer{addr: addr, proxy: httputil.NewSingleHostReverseProxy(u)}
 }
+
+func (s *simpleServer) address() string                             { return s.addr }
+func (s *simpleServer) serve(w http.ResponseWriter, r *http.Request) { s.proxy.ServeHTTP(w, r) }
 
 func handleErr(err error) {
 	if err != nil {
@@ -48,67 +30,66 @@ func handleErr(err error) {
 	}
 }
 
-func (s *simpleServer) getNoOfConnections() int {
-	return s.NoOfConnections
-}
-
-func (s *simpleServer) changeNoOfConnections(n int) {
-	s.NoOfConnections = s.NoOfConnections + n
-}
-
 type LoadBalancer struct {
 	roundRobinCount int
-	servers         []Server
+	servers         []*simpleServer
 	mu              sync.Mutex
 }
 
-func newLoadBalancer(servers []Server) *LoadBalancer {
-	return &LoadBalancer{
-		roundRobinCount: 0,
-		servers:         servers,
-	}
+func newLoadBalancer(servers []*simpleServer) *LoadBalancer {
+	return &LoadBalancer{servers: servers}
 }
 
-func (s *simpleServer) Address() string {
-	return s.Addr
-}
-
-func (s *simpleServer) Serve(w http.ResponseWriter, r *http.Request) {
-	s.Proxy.ServeHTTP(w, r)
-}
-
-func (lb *LoadBalancer) getNextAvaliableServer() Server {
+func (lb *LoadBalancer) getNextAvailableServer() *simpleServer {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	server := lb.servers[lb.roundRobinCount%len(lb.servers)]
+	s := lb.servers[lb.roundRobinCount%len(lb.servers)]
 	lb.roundRobinCount++
-	return server
+	return s
 }
 
 func (lb *LoadBalancer) serverProxy(w http.ResponseWriter, r *http.Request) {
-	target := lb.getNextAvaliableServer()
-	fmt.Printf("foward requests to address: %q\n", target.Address())
-	target.Serve(w, r)
+	target := lb.getNextAvailableServer()
+	fmt.Printf("forwarding request to: %q\n", target.address())
+	target.serve(w, r)
 }
 
 func main() {
-	algorithm = os.Getenv("LB_ALGORITHM")
-	severs := []Server{
-		newServer("http://server1:3030"),
-		newServer("http://server2:3030"),
-		newServer("http://server3:3030"),
-	}
+	algorithm := os.Getenv("LB_ALGORITHM")
 	port := "8000"
+	addrs := []string{
+		"http://server1:3030",
+		"http://server2:3030",
+		"http://server3:3030",
+	}
+
 	var handler func(http.ResponseWriter, *http.Request)
 
-	if algorithm == "lc" {
-		lb := newLCLB(severs)
+	switch algorithm {
+	case "lc":
+		servers := make([]*LCserver, len(addrs))
+		for i, addr := range addrs {
+			servers[i] = newLCServer(addr)
+		}
+		lb := newLCLB(servers)
 		handler = lb.serverProxy
-	} else {
-		lb := newLoadBalancer(severs)
+	case "lrt":
+		servers := make([]*LRTserver, len(addrs))
+		for i, addr := range addrs {
+			servers[i] = newLRTServer(addr)
+		}
+		lb := newLRTLB(servers)
+		handler = lb.serverProxy
+	default:
+		servers := make([]*simpleServer, len(addrs))
+		for i, addr := range addrs {
+			servers[i] = newSimpleServer(addr)
+		}
+		lb := newLoadBalancer(servers)
 		handler = lb.serverProxy
 	}
+
 	http.HandleFunc("/", handler)
-	fmt.Println("Started Serving at")
+	fmt.Println("Started serving at :" + port)
 	http.ListenAndServe(":"+port, nil)
 }

@@ -4,87 +4,61 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"sync"
 	"time"
 )
 
 type LRTserver struct {
-	Addr            string
-	NoOfConnections int
-	Proxy           *httputil.ReverseProxy
-	AverageTime     time.Duration
-	NoOfRequests    int
+	addr         string
+	proxy        *httputil.ReverseProxy
+	averageTime  time.Duration
+	noOfRequests int
+}
+
+func newLRTServer(addr string) *LRTserver {
+	u, err := url.Parse(addr)
+	handleErr(err)
+	return &LRTserver{addr: addr, proxy: httputil.NewSingleHostReverseProxy(u)}
 }
 
 type LeastResponseTimeLoadBalancer struct {
-	servers []Server
+	servers []*LRTserver
 	mu      sync.Mutex
 }
 
-func newLRTLB(servers []Server) *LeastResponseTimeLoadBalancer {
-	return &LeastResponseTimeLoadBalancer{
-		servers: servers,
-	}
+func newLRTLB(servers []*LRTserver) *LeastResponseTimeLoadBalancer {
+	return &LeastResponseTimeLoadBalancer{servers: servers}
 }
 
-func (s *LRTserver) Address() string {
-	return s.Addr
-}
-
-func (s *LRTserver) getAverageTime() time.Duration {
-	return s.AverageTime
-}
-
-func (s *LRTserver) updateAverageTime(elapsed time.Duration) {
-	if s.NoOfRequests == 0 {
-		s.AverageTime = elapsed
-		return
-	}
-	total := s.AverageTime*time.Duration(s.NoOfRequests) + elapsed
-	s.AverageTime = total / time.Duration(s.NoOfRequests+1)
-}
-
-func (s *LRTserver) changeNoOfConnections(n int) {
-	s.NoOfConnections = s.NoOfConnections + n
-}
-
-func (s *LRTserver) addNoOfRequests() {
-	s.NoOfRequests++
-}
-
-func (s *LRTserver) Serve(w http.ResponseWriter, r *http.Request) {
-	s.Proxy.ServeHTTP(w, r)
-}
-
-func (lb *LeastResponseTimeLoadBalancer) getNextAvaliableServer() Server {
-	var targerServer Server
-	targetServers := make([]Server, 0)
-	targerServer = lb.servers[0]
-	for _, server := range lb.servers {
-		if targerServer.getAverageTime() > server.getAverageTime() {
-			targerServer = server
+func (lb *LeastResponseTimeLoadBalancer) getNextAvailableServer() *LRTserver {
+	min := lb.servers[0]
+	for _, s := range lb.servers[1:] {
+		if s.averageTime < min.averageTime {
+			min = s
 		}
 	}
-	for _, ser := range lb.servers {
-		if ser.getAverageTime() == targerServer.getAverageTime() {
-			targetServers = append(targetServers, ser)
+	var tied []*LRTserver
+	for _, s := range lb.servers {
+		if s.averageTime == min.averageTime {
+			tied = append(tied, s)
 		}
 	}
-	if len(targetServers) > 1 {
-		randomInt := rand.Intn(len(targetServers))
-		return targetServers[randomInt]
-	}
-	return targerServer
+	return tied[rand.Intn(len(tied))]
 }
 
 func (lb *LeastResponseTimeLoadBalancer) serverProxy(w http.ResponseWriter, r *http.Request) {
-	target := lb.getNextAvaliableServer()
-	start := time.Now()
-	target.Serve(w, r)
-	elapsed := time.Since(start)
 	lb.mu.Lock()
-	target.updateAverageTime(elapsed)
-	target.addNoOfRequests()
+	target := lb.getNextAvailableServer()
 	lb.mu.Unlock()
 
+	start := time.Now()
+	target.proxy.ServeHTTP(w, r)
+	elapsed := time.Since(start)
+
+	lb.mu.Lock()
+	total := target.averageTime*time.Duration(target.noOfRequests) + elapsed
+	target.noOfRequests++
+	target.averageTime = total / time.Duration(target.noOfRequests)
+	lb.mu.Unlock()
 }

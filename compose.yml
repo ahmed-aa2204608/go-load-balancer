@@ -1,0 +1,84 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  server1:
+    build:
+      context: ./server
+      target: final
+    image: myserver:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_SSLMODE: disable
+    ports:
+      - 3030:3030
+    depends_on:
+      postgres:
+        condition: service_healthy
+  server2:
+    image: myserver:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_SSLMODE: disable
+    ports:
+      - 3031:3030
+    depends_on:
+      server1:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+  server3:
+    image: myserver:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_SSLMODE: disable
+    ports:
+      - 3032:3030
+    depends_on:
+      server1:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+  loadbalancer:
+    build:
+      context: ./src
+      target: final
+    image: myloadbalancer:latest
+    ports:
+      - 8000:8000
+    depends_on:
+      server1:
+        condition: service_started
+      server2:
+        condition: service_started
+      server3:
+        condition: service_started
+volumes:
+  postgres_data:

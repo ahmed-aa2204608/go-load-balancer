@@ -4,7 +4,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"sync"
 )
 
@@ -15,24 +14,12 @@ type LCserver struct {
 }
 
 type LeastConnectionsLoadBalancer struct {
-	port    string
 	servers []Server
 	mu      sync.Mutex
 }
 
-func createNewLCServer(Addr string) *LCserver {
-	serverUrl, err := url.Parse(Addr)
-	handleErr(err)
-	return &LCserver{
-		Addr:            Addr,
-		NoOfConnections: 0,
-		Proxy:           httputil.NewSingleHostReverseProxy(serverUrl),
-	}
-}
-
-func newLCLB(Addr string, servers []Server) *LeastConnectionsLoadBalancer {
+func newLCLB(servers []Server) *LeastConnectionsLoadBalancer {
 	return &LeastConnectionsLoadBalancer{
-		port:    Addr,
 		servers: servers,
 	}
 }
@@ -68,17 +55,20 @@ func (lb *LeastConnectionsLoadBalancer) getNextAvaliableServer() Server {
 		}
 	}
 	if len(targetServers) > 1 {
-		randomInt := rand.Intn(len(targetServers)) + 1
+		randomInt := rand.Intn(len(targetServers))
 		return targetServers[randomInt]
 	}
 	return targerServer
 }
 
 func (lb *LeastConnectionsLoadBalancer) serverProxy(w http.ResponseWriter, r *http.Request) {
-	target := lb.getNextAvaliableServer()
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
+	target := lb.getNextAvaliableServer()
 	target.changeNoOfConnections(1)
-	defer func() { target.changeNoOfConnections(-1) }()
+	lb.mu.Unlock()
 	target.Serve(w, r)
+	lb.mu.Lock()
+	target.changeNoOfConnections(-1)
+	lb.mu.Unlock()
+
 }

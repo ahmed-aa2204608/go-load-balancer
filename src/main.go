@@ -9,6 +9,8 @@ import (
 	"sync"
 )
 
+var algorithm string
+
 type Server interface {
 	Address() string
 	Serve(w http.ResponseWriter, r *http.Request)
@@ -22,14 +24,20 @@ type simpleServer struct {
 	Proxy           *httputil.ReverseProxy
 }
 
-func newSimpleServer(addr string) *simpleServer {
+func newServer(addr string) Server {
 	serverUrl, err := url.Parse(addr)
 	handleErr(err)
-
-	return &simpleServer{
-		Addr:            addr,
-		NoOfConnections: 0,
-		Proxy:           httputil.NewSingleHostReverseProxy(serverUrl),
+	if algorithm == "lc" {
+		return &LCserver{
+			Addr:            addr,
+			NoOfConnections: 0,
+			Proxy:           httputil.NewSingleHostReverseProxy(serverUrl)}
+	} else {
+		return &simpleServer{
+			Addr:            addr,
+			NoOfConnections: 0,
+			Proxy:           httputil.NewSingleHostReverseProxy(serverUrl),
+		}
 	}
 }
 
@@ -49,15 +57,13 @@ func (s *simpleServer) changeNoOfConnections(n int) {
 }
 
 type LoadBalancer struct {
-	port            string
 	roundRobinCount int
 	servers         []Server
 	mu              sync.Mutex
 }
 
-func newLoadBalancer(port string, servers []Server) *LoadBalancer {
+func newLoadBalancer(servers []Server) *LoadBalancer {
 	return &LoadBalancer{
-		port:            port,
 		roundRobinCount: 0,
 		servers:         servers,
 	}
@@ -86,27 +92,23 @@ func (lb *LoadBalancer) serverProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	algorithm = os.Getenv("LB_ALGORITHM")
 	severs := []Server{
-		newSimpleServer("http://server1:3030"),
-		newSimpleServer("http://server2:3030"),
-		newSimpleServer("http://server3:3030"),
+		newServer("http://server1:3030"),
+		newServer("http://server2:3030"),
+		newServer("http://server3:3030"),
 	}
-	algorithm := os.Getenv("LB_ALGORITHM")
 	port := "8000"
 	var handler func(http.ResponseWriter, *http.Request)
 
 	if algorithm == "lc" {
-		lb := newLCLB(port, severs)
+		lb := newLCLB(severs)
 		handler = lb.serverProxy
-		http.HandleFunc("/", handler)
-		fmt.Println("Started Serving at")
-		http.ListenAndServe(":"+lb.port, nil)
 	} else {
-		lb := newLoadBalancer(port, severs)
+		lb := newLoadBalancer(severs)
 		handler = lb.serverProxy
-		http.HandleFunc("/", handler)
-		fmt.Println("Started Serving at")
-		http.ListenAndServe(":"+lb.port, nil)
 	}
-
+	http.HandleFunc("/", handler)
+	fmt.Println("Started Serving at")
+	http.ListenAndServe(":"+port, nil)
 }
